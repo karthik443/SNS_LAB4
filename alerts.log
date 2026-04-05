@@ -1,0 +1,14 @@
+2026-04-05 15:47:16 AlertManager started
+2026-04-05 15:47:34 ALERT [High] rule=brute_force entity=10.0.0.99 score=11.2 sources=[network, host] desc=Brute-force detected: 5 failed logins for entity '10.0.0.99' in 60.0s window. Score=11.2.
+2026-04-05 15:47:41 ALERT [Critical] rule=port_scan entity=10.0.0.99 score=55.0 sources=[network, host] desc=Port scan detected from '10.0.0.99': 1 scan events. Score=55.0.
+2026-04-05 15:47:41 ALERT [Critical] rule=coordinated_attack entity=10.0.0.99 score=55.0 sources=[network, host] desc=Coordinated attack from '10.0.0.99': 20 login fails + 1 port scans + 0 replays. Score=55.0.
+2026-04-05 15:48:09 ALERT [Critical] rule=brute_force entity=10.0.0.99 score=181.6 sources=[network, host] desc=Brute-force detected: 20 failed logins for entity '10.0.0.99' in 60.0s window. Score=181.6.
+2026-04-05 15:48:09 ALERT [Critical] rule=port_scan entity=10.0.0.99 score=181.6 sources=[network, host] desc=Port scan detected from '10.0.0.99': 17 scan events. Score=181.6.
+2026-04-05 15:48:09 ALERT [High] rule=replay_attack entity=10.0.0.99 score=181.6 sources=[network, host] desc=Replay attack from '10.0.0.99': 1 replay events. Score=181.6.
+2026-04-05 15:49:14 AlertManager started
+2026-04-05 15:49:46 ALERT [High] rule=brute_force entity=10.0.0.99 score=11.2 sources=[host, network] desc=Brute-force detected: 5 failed logins for entity '10.0.0.99' in 60.0s window. Score=11.2.
+2026-04-05 15:49:53 ALERT [Critical] rule=port_scan entity=10.0.0.99 score=55.0 sources=[host, network] desc=Port scan detected from '10.0.0.99': 1 scan events. Score=55.0.
+2026-04-05 15:49:53 ALERT [Critical] rule=coordinated_attack entity=10.0.0.99 score=55.0 sources=[host, network] desc=Coordinated attack from '10.0.0.99': 20 login fails + 1 port scans + 0 replays. Score=55.0.
+2026-04-05 15:50:21 ALERT [Critical] rule=brute_force entity=10.0.0.99 score=181.6 sources=[host, network] desc=Brute-force detected: 20 failed logins for entity '10.0.0.99' in 60.0s window. Score=181.6.
+2026-04-05 15:50:21 ALERT [Critical] rule=port_scan entity=10.0.0.99 score=181.6 sources=[host, network] desc=Port scan detected from '10.0.0.99': 17 scan events. Score=181.6.
+2026-04-05 15:50:21 ALERT [High] rule=replay_attack entity=10.0.0.99 score=181.6 sources=[host, network] desc=Replay attack from '10.0.0.99': 1 replay events. Score=181.6.
