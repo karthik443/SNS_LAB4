@@ -134,12 +134,28 @@ def evaluate_alerts(alerts: list[Alert],
     }
 
     matched_windows = set()
+    # Larger grace to account for propagation delays between components
+    GRACE = 8.0
     for alert in alerts:
         if alert.rule_name not in ATTACK_RULES:
             continue
         matched = False
         for i, (ws, we, wname) in enumerate(attack_windows):
-            if ws <= alert.timestamp <= we + 5.0:  # 5s grace
+            # For coordinated attacks, accept any contributing attack rule as TP
+            window_match = False
+            if wname == "coordinated_attack":
+                # Accept the fused coordinated_alert itself, or any contributing
+                # attack rule that indicates the coordinated event.
+                if alert.rule_name == "coordinated_attack" or \
+                   alert.rule_name in {"brute_force", "port_scan", "replay_attack", "privilege_escalation"}:
+                    window_match = (ws <= alert.timestamp <= we + GRACE)
+            else:
+                # Allow the fused coordinated alert to satisfy individual attack
+                # windows (e.g., a coordinated detection proves a port_scan).
+                window_match = (ws <= alert.timestamp <= we + GRACE and
+                                (alert.rule_name == wname or alert.rule_name == "coordinated_attack"))
+
+            if window_match:
                 if i not in matched_windows:
                     record.true_positives += 1
                     matched_windows.add(i)

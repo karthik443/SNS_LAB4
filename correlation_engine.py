@@ -20,6 +20,19 @@ from anomaly_detector import anomaly_detector
 logger = logging.getLogger("ids.correlation")
 
 
+def _looks_like_ip(s: str) -> bool:
+    """Rudimentary check whether a string is an IPv4-like key."""
+    if not isinstance(s, str):
+        return False
+    parts = s.split('.')
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(p) <= 255 for p in parts)
+    except Exception:
+        return False
+
+
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
@@ -135,14 +148,17 @@ def rule_port_scan(window: SlidingWindow, entity: str) -> RuleResult:
     Trigger: ≥1 NET_PORT_SCAN event from entity.
     """
     scans = window.count_by_type(EventType.NET_PORT_SCAN)
-    if scans < 1:
+    conns = window.count_by_type(EventType.NET_CONNECTION)
+    # Require stronger evidence: either multiple explicit scan summaries, or
+    # at least one summary plus a significant number of connection attempts.
+    if scans < 1 or (scans == 1 and conns < 10 and window.score() < 10.0):
         return RuleResult(False, "port_scan", Severity.INFO, "", 0.0, [])
 
     sources = list(window.unique_sources())
     multi   = len(sources) >= 2
     score   = window.score()
     desc    = f"Port scan detected from '{entity}': {scans} scan events. Score={score:.1f}."
-    severity = Severity.HIGH if not multi else Severity.CRITICAL
+    severity = Severity.CRITICAL if multi else Severity.HIGH
     if not multi:
         severity = Severity.cap(severity, Severity.HIGH)
     return RuleResult(True, "port_scan", severity, desc, score, sources, multi)
@@ -255,6 +271,7 @@ def rule_coordinated_attack(window: SlidingWindow, entity: str) -> RuleResult:
     fails  = window.count_by_type(EventType.HOST_LOGIN_FAIL)
     scans  = window.count_by_type(EventType.NET_PORT_SCAN)
     replay = window.count_by_type(EventType.NET_REPLAY)
+    logger.debug(f"coordinated_check: entity={entity} fails={fails} scans={scans} replay={replay}")
     if not (fails >= 3 and scans >= 1):
         return RuleResult(False, "coordinated_attack", Severity.INFO, "", 0.0, [])
 
@@ -302,8 +319,13 @@ class CorrelationEngine(threading.Thread):
 
     def _entity_key(self, event: Event) -> str:
         """Determine primary entity identifier for grouping."""
+        # Prefer src_ip when present so network+host events can share window
         if event.src_ip:
             return event.src_ip
+        # If host event carries a username and *also* includes src_ip in metadata,
+        # prefer that src_ip so the host event joins the IP-based window.
+        if event.username and event.metadata.get("src_ip"):
+            return event.metadata.get("src_ip")
         if event.username:
             return event.username
         return "global"
@@ -342,21 +364,62 @@ class CorrelationEngine(threading.Thread):
                 self._windows[key].add(event)
                 window = self._windows[key]
 
-            # Evaluate rules
-            for rule_fn in ALL_RULES:
-                result = rule_fn(window, key)
-                if result.triggered:
+            # Cross-post host-only events into IP window when possible
+            # Some host events (priv-esc, proc-exec) may not have src_ip but are
+            # part of a chain starting from an IP. If event.metadata contains
+            # 'related_ip', mirror the event into that IP window as well so
+            # coordinated rules can see both kinds of evidence together. We'll
+            # evaluate rules for both the primary key and any related_ip so the
+            # fused detectors can observe mixed evidence.
+            related_ip = event.metadata.get("related_ip") if hasattr(event, 'metadata') else None
+            if related_ip:
+                with self._lock:
+                    self._windows[related_ip].add(event)
+
+            # Evaluate rules on the primary window and any mirrored related_ip
+            # If we mirrored this event into an IP window, prefer publishing
+            # alerts for the IP window only (to avoid duplicate username-keyed
+            # alerts). We'll still evaluate both windows but only emit alerts
+            # for the IP-keyed window when present.
+            windows_to_check = [key]
+            if related_ip and related_ip != key:
+                windows_to_check.append(related_ip)
+
+            published = set()  # avoid duplicate (rule,entity) alerts per event
+            for wkey in windows_to_check:
+                with self._lock:
+                    w = self._windows[wkey]
+
+                for rule_fn in ALL_RULES:
+                    result = rule_fn(w, wkey)
+                    if not result.triggered:
+                        continue
+                    ident = (result.rule_name, wkey)
+                    if ident in published:
+                        continue
+                    published.add(ident)
+                    logger.debug(f"rule_triggered: {result.rule_name} entity={wkey} severity={result.severity}")
+                    # Ensure the alert uses the evaluated window entity as src_ip
+                    # so downstream components and evaluation see a consistent key.
+                    # If we have both a username-keyed window and an IP-keyed
+                    # window for the same underlying attack, prefer emitting
+                    # only the IP-keyed alert (when wkey looks like an IP).
+                    emit_ip_only = any(_looks_like_ip(k) for k in windows_to_check)
+                    if emit_ip_only and not _looks_like_ip(wkey):
+                        # Skip emitting username-keyed alert to avoid duplicates.
+                        continue
                     alert = Alert(
-                        rule_name    = result.rule_name,
-                        severity     = result.severity,
-                        score        = result.score,
-                        description  = result.description,
-                        sources      = result.sources,
-                        related_events = window.event_ids(),
-                        src_ip       = event.src_ip,
-                        username     = event.username,
+                        rule_name     = result.rule_name,
+                        severity      = result.severity,
+                        score         = result.score,
+                        description   = result.description,
+                        sources       = result.sources,
+                        related_events = w.event_ids(),
+                        src_ip        = wkey if _looks_like_ip(wkey) else event.src_ip,
+                        username      = event.username,
                     )
                     bus.publish_alert(alert)
+
 
     def stop(self):
         self.active.clear()

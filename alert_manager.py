@@ -131,3 +131,12 @@ class AlertManager(threading.Thread):
 
     def get_alert_log(self) -> list[Alert]:
         return list(self.alert_log)
+
+    def alerts_since(self, ts: float) -> list[Alert]:
+        """Return alerts with timestamp >= ts (useful for per-scenario snapshots)."""
+        return [a for a in self.alert_log if a.timestamp >= ts]
+
+    def reset_cooldowns(self):
+        """Clears the internal cooldown/cache so scenarios do not suppress each other."""
+        with self._lock:
+            self._last_alert.clear()

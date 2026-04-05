@@ -20,6 +20,7 @@ import logging
 import threading
 import time
 import sys
+import random
 
 # ── Configure logging first ──────────────────
 logging.basicConfig(
@@ -130,12 +131,15 @@ def run_brute_force(ids: IDSSystem) -> ExperimentRecord:
     _banner("Scenario 1: Brute-Force Login")
     rec = ExperimentRecord("brute_force")
     attack_start = time.time()
+    # reset cooldowns so prior scenarios don't suppress these alerts
+    ids.alert_mgr.reset_cooldowns()
     sim.scenario_brute_force(username="root", n_attempts=20, delay=0.08)
     attack_end = time.time()
     time.sleep(3)  # let alerts propagate
     rec.end_time = time.time()
     rec.injected_attacks = 1
-    evaluate_alerts(ids.alerts(), [(attack_start, attack_end, "brute_force")],
+    alerts_snapshot = ids.alert_mgr.alerts_since(attack_start)
+    evaluate_alerts(alerts_snapshot, [(attack_start, attack_end, "brute_force")],
                     benign_count=30, record=rec)
     return rec
 
@@ -143,6 +147,7 @@ def run_brute_force(ids: IDSSystem) -> ExperimentRecord:
 def run_port_scan(ids: IDSSystem) -> ExperimentRecord:
     _banner("Scenario 2: Port Scan (Fast + Slow)")
     rec = ExperimentRecord("port_scan")
+    ids.alert_mgr.reset_cooldowns()
     t0 = time.time()
     sim.scenario_port_scan_fast()
     t1 = time.time()
@@ -152,7 +157,12 @@ def run_port_scan(ids: IDSSystem) -> ExperimentRecord:
     time.sleep(3)
     rec.end_time = time.time()
     rec.injected_attacks = 2
-    evaluate_alerts(ids.alerts(),
+    alerts_snapshot = ids.alert_mgr.alerts_since(t0)
+    # DEBUG: show snapshot contents for diagnosis
+    print(f"  [DEBUG] coordinated window t0={t0:.3f} t1={t1:.3f}")
+    for a in alerts_snapshot:
+        print(f"    [DEBUG] alert ts={a.timestamp:.3f} rule={a.rule_name} src_ip={a.src_ip} sev={a.severity}")
+    evaluate_alerts(alerts_snapshot,
                     [(t0, t1, "port_scan"), (t1+1, t2, "port_scan")],
                     benign_count=20, record=rec)
     return rec
@@ -161,13 +171,15 @@ def run_port_scan(ids: IDSSystem) -> ExperimentRecord:
 def run_noise(ids: IDSSystem) -> ExperimentRecord:
     _banner("Scenario 3: Noise Injection (no true attacks)")
     rec = ExperimentRecord("noise_injection")
+    t0 = time.time()
     sim.scenario_noise_injection(duration=8.0, n_ips=40)
     time.sleep(2)
     rec.end_time = time.time()
     rec.injected_benign = 200
     rec.injected_attacks = 0
-    # All alerts during noise are false positives
-    noise_alerts = [a for a in ids.alerts() if a.severity in (Severity.HIGH, Severity.CRITICAL)]
+    # All HIGH/CRITICAL alerts *during the noise window* are false positives
+    noise_alerts = [a for a in ids.alert_mgr.alerts_since(t0)
+                    if a.severity in (Severity.HIGH, Severity.CRITICAL)]
     rec.false_positives = len(noise_alerts)
     rec.true_negatives  = max(0, 200 - rec.false_positives)
     return rec
@@ -176,15 +188,19 @@ def run_noise(ids: IDSSystem) -> ExperimentRecord:
 def run_replay(ids: IDSSystem) -> ExperimentRecord:
     _banner("Scenario 4: Replay Attack")
     rec = ExperimentRecord("replay_attack")
+    # Ensure replay uses a fresh attacker IP to avoid cross-scenario contamination
+    unique_ip = f"10.0.1.{random.randint(2,250)}"
     sim.scenario_record_benign(n=10)
     time.sleep(1)
+    ids.alert_mgr.reset_cooldowns()
     t0 = time.time()
-    sim.scenario_replay_attack()
+    sim.scenario_replay_attack(attacker_ip=unique_ip)
     t1 = time.time()
     time.sleep(3)
     rec.end_time = time.time()
     rec.injected_attacks = 1
-    evaluate_alerts(ids.alerts(), [(t0, t1, "replay_attack")],
+    alerts_snapshot = ids.alert_mgr.alerts_since(t0)
+    evaluate_alerts(alerts_snapshot, [(t0, t1, "replay_attack")],
                     benign_count=10, record=rec)
     return rec
 
@@ -205,6 +221,7 @@ def run_sensor_failure(ids: IDSSystem) -> ExperimentRecord:
     from host_sensor import SyntheticHostSensor
     fsim = sim.SensorFailureSimulator("host_sensor", _stop_host, _start_host)
 
+    ids.alert_mgr.reset_cooldowns()
     t0 = time.time()
     # During sensor failure, run a brute-force attack from network side only
     fail_thread = threading.Thread(target=fsim.simulate_failure, args=(10.0,), daemon=True)
@@ -228,13 +245,17 @@ def run_sensor_failure(ids: IDSSystem) -> ExperimentRecord:
 def run_coordinated(ids: IDSSystem) -> ExperimentRecord:
     _banner("Scenario 6: Coordinated Multi-Vector Attack")
     rec = ExperimentRecord("coordinated_attack")
+    # Use unique attacker IP for coordinated scenario and reset cooldowns
+    unique_ip = f"10.0.2.{random.randint(2,250)}"
+    ids.alert_mgr.reset_cooldowns()
     t0 = time.time()
-    sim.scenario_coordinated_attack(username="admin")
+    sim.scenario_coordinated_attack(attacker_ip=unique_ip, username="admin")
     t1 = time.time()
     time.sleep(4)
     rec.end_time = time.time()
     rec.injected_attacks = 1
-    evaluate_alerts(ids.alerts(), [(t0, t1, "coordinated_attack")],
+    alerts_snapshot = ids.alert_mgr.alerts_since(t0)
+    evaluate_alerts(alerts_snapshot, [(t0, t1, "coordinated_attack")],
                     benign_count=20, record=rec)
     return rec
 

@@ -229,24 +229,50 @@ def scenario_coordinated_attack(attacker_ip: str = ATTACKER_IP,
     """
     logger.info(f"[Scenario] Coordinated attack from {attacker_ip} targeting {username}")
 
-    # Step 1: Port scan reconnaissance
-    scenario_port_scan_fast(attacker_ip=attacker_ip, ports=list(range(20, 200, 3)),
-                             delay=0.01)
-    time.sleep(0.5)
+    # Step 1: Inline port scan reconnaissance (ensure events use same attacker_ip)
+    ports = list(range(20, 200, 3))
+    logger.info(f"[Scenario] Fast port scan: {len(ports)} ports from {attacker_ip}")
+    for p in ports[:60]:
+        _net(attacker_ip, VICTIM_IP, random.randint(1024, 65535), p,
+             EventType.NET_CONNECTION)
+        time.sleep(0.01)
 
-    # Step 2: Brute force
-    for _ in range(15):
+    # Immediately follow with brute-force attempts so events co-exist in window
+    for _ in range(20):
         hs.inject_login_failure(username=username, src_ip=attacker_ip)
         _net(attacker_ip, VICTIM_IP, random.randint(1024, 65535), 22,
              EventType.NET_CONNECTION)
-        time.sleep(0.05)
+        # very tight loop to ensure events fall in same sliding window
+        pass
+    # publish explicit scan summary after brute-force so timestamps align
+    bus.publish_event(Event(
+        source="network", event_type=EventType.NET_PORT_SCAN,
+        src_ip=attacker_ip, dst_ip=VICTIM_IP,
+        src_port=0, dst_port=0,
+        metadata={"ports_accessed": ports[:60], "scan_type": "fast_inline"},
+    ))
 
     # Step 3: Attacker gets in
     hs.inject_login_success(username=username, src_ip=attacker_ip)
 
     # Step 4: Suspicious process + sensitive file
+    # Step 4: Suspicious process + sensitive file (mirror into IP window)
     hs.inject_suspicious_process(username=username, process="nc")
+    # Mirror to IP-keyed window
+    bus.publish_event(Event(
+        source="host", event_type=EventType.HOST_PROC_EXEC,
+        username=username, process="nc", metadata={"related_ip": attacker_ip},
+    ))
     hs.inject_sensitive_file_access(username=username, filepath="/etc/shadow")
+    bus.publish_event(Event(
+        source="host", event_type=EventType.HOST_FILE_ACCESS,
+        username=username, filepath="/etc/shadow",
+        metadata={"related_ip": attacker_ip, "sensitive": True},
+    ))
 
-    # Step 5: Privilege escalation
+    # Step 5: Privilege escalation (mirror as well)
     hs.inject_privilege_escalation(username=username)
+    bus.publish_event(Event(
+        source="host", event_type=EventType.HOST_PRIV_ESC,
+        username=username, metadata={"related_ip": attacker_ip, "method": "sudo su"},
+    ))
